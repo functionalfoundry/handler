@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
-	"strings"
 
 	"github.com/graphql-go/graphql"
 )
@@ -17,14 +16,12 @@ type graphiqlPage struct {
 	ResultString                 string
 	VariablesString              string
 	OperationName                string
-	Endpoint                     template.URL
-	SubscriptionEndpoint         template.URL
-	UsingHTTP                    bool
-	UsingWS                      bool
+	Endpoint                     string
+	SubscriptionsEndpoint        string
 }
 
 // renderGraphiQL renders the GraphiQL GUI
-func renderGraphiQL(w http.ResponseWriter, params graphql.Params, handler Handler) {
+func renderGraphiQL(w http.ResponseWriter, params graphql.Params, handler *Handler) {
 	t := template.New("GraphiQL")
 	t, err := t.Parse(graphiqlTemplate)
 	if err != nil {
@@ -56,16 +53,14 @@ func renderGraphiQL(w http.ResponseWriter, params graphql.Params, handler Handle
 		resString = string(result)
 	}
 
-	isEndpointUsingWS := strings.HasPrefix(handler.Endpoint, "ws://")
-	UsingHTTP := !isEndpointUsingWS
-	UsingWS := isEndpointUsingWS || handler.SubscriptionsEndpoint != ""
-	SubscriptionEndpoint := ""
-	if UsingWS {
-		if isEndpointUsingWS {
-			SubscriptionEndpoint = handler.Endpoint
-		} else {
-			SubscriptionEndpoint = handler.SubscriptionsEndpoint
-		}
+	endpoint := ""
+	if handler.graphiqlConfig != nil {
+		endpoint = handler.graphiqlConfig.Endpoint
+	}
+
+	subscriptionsEndpoint := ""
+	if handler.graphiqlConfig != nil {
+		subscriptionsEndpoint = handler.graphiqlConfig.SubscriptionsEndpoint
 	}
 
 	p := graphiqlPage{
@@ -75,10 +70,8 @@ func renderGraphiQL(w http.ResponseWriter, params graphql.Params, handler Handle
 		ResultString:                 resString,
 		VariablesString:              varsString,
 		OperationName:                params.OperationName,
-		Endpoint:                     template.URL(handler.Endpoint),
-		SubscriptionEndpoint:         template.URL(SubscriptionEndpoint),
-		UsingHTTP:                    UsingHTTP,
-		UsingWS:                      UsingWS,
+		Endpoint:                     endpoint,
+		SubscriptionsEndpoint:        subscriptionsEndpoint,
 	}
 
 	err = t.ExecuteTemplate(w, "index", p)
@@ -124,13 +117,9 @@ add "&raw" to the end of the URL within a browser.
   <script src="//cdn.jsdelivr.net/react/15.4.2/react-dom.min.js"></script>
   <script src="//cdn.jsdelivr.net/npm/graphiql@{{ .GraphiqlVersion }}/graphiql.min.js"></script>
 
-  {{ if .UsingHTTP }}
-    <script src="//cdn.jsdelivr.net/fetch/2.0.1/fetch.min.js"></script>
-  {{ end }}
-  {{ if .UsingWS }}
+  <script src="//cdn.jsdelivr.net/fetch/2.0.1/fetch.min.js"></script>
+  {{ if .SubscriptionsEndpoint }}
     <script src="//unpkg.com/subscriptions-transport-ws@{{ .SubscriptionTransportVersion }}/browser/client.js"></script>
-  {{ end }}
-  {{ if and .UsingWS .UsingHTTP }}
     <script src="//unpkg.com/graphiql-subscriptions-fetcher@0.0.2/browser/client.js"></script>
   {{ end }}
 
@@ -169,48 +158,48 @@ add "&raw" to the end of the URL within a browser.
       }
     }
 
-    {{ if .UsingWS }}
-      var subscriptionsClient = new window.SubscriptionsTransportWs.SubscriptionClient({{ .SubscriptionEndpoint }}, {
+    {{ if .SubscriptionsEndpoint }}
+      var subscriptionsClient = new window.SubscriptionsTransportWs.SubscriptionClient({{ .SubscriptionsEndpoint }}, {
         reconnect: true
       });
       var graphQLWSFetcher = subscriptionsClient.request.bind(subscriptionsClient);
     {{ end }}
 
-    {{ if .UsingHTTP }}
+    {{ if .Endpoint }}
       var fetchURL = locationQuery(otherParams, {{ .Endpoint }});
-
-      // Defines a GraphQL fetcher using the fetch API.
-      function graphQLHttpFetcher(graphQLParams) {
-        return fetch(fetchURL, {
-          method: 'post',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(graphQLParams),
-          credentials: 'include',
-        }).then(function (response) {
-          return response.text();
-        }).then(function (responseBody) {
-          try {
-            return JSON.parse(responseBody);
-          } catch (error) {
-            return responseBody;
-          }
-        });
-      }
-    {{ end }}
-
-    {{ if and .UsingWS .UsingHTTP }}
-      var fetcher = window.GraphiQLSubscriptionsFetcher.graphQLFetcher(subscriptionsClient, graphQLHttpFetcher);
     {{ else }}
-      {{ if .UsingWS }}
-        var fetcher = graphQLWSFetcher;
-      {{ end }}
-      {{ if .UsingHTTP }}
-        var fetcher = graphQLHttpFetcher;
-      {{ end }}
+      var fetchURL = locationQuery(otherParams)
     {{ end }}
+
+    // Defines a GraphQL fetcher using the fetch API.
+    function graphQLHttpFetcher(graphQLParams) {
+      return fetch(fetchURL, {
+        method: 'post',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(graphQLParams),
+        credentials: 'include',
+      }).then(function (response) {
+        return response.text();
+      }).then(function (responseBody) {
+        try {
+          return JSON.parse(responseBody);
+        } catch (error) {
+          return responseBody;
+        }
+      });
+    }
+
+    var fetcher = graphQLHttpFetcher
+
+    if (typeof graphQLWSFetcher != 'undefined') {
+      fetcher = window.GraphiQLSubscriptionsFetcher.graphQLFetcher(
+        subscriptionsClient,
+        graphQLHttpFetcher
+      );
+    }
 
     // When the query and variables string is edited, update the URL bar so
     // that it can be easily shared.
